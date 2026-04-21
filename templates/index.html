@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Kentiq AI Voice Bot — Dubai Bank</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="logo">🏦</div>
+      <h1>Kentiq AI Voice Bot</h1>
+      <p>Dubai Bank — AI Banking Assistant</p>
+    </div>
+
+    <div class="chat-box" id="chatBox">
+      <div class="message bot">Click Start to begin...</div>
+    </div>
+
+    <div class="controls">
+      <button class="btn btn-start" onclick="startBot()">▶ Start</button>
+      <button class="btn btn-mic" onclick="toggleListening()" id="micBtn">🎤 Speak</button>
+    </div>
+
+    <div class="upload-section">
+      <p>Upload Cheque Image:</p>
+      <input type="file" id="chequeFile" accept="image/*" />
+      <button class="btn btn-upload" onclick="uploadCheque()">📤 Upload Cheque</button>
+    </div>
+
+    <div class="quick-actions">
+      <p>Quick Commands:</p>
+      <div class="actions">
+        <button onclick="sendCommand('check my balance')">💰 Balance</button>
+        <button onclick="sendCommand('transfer money')">💸 Transfer</button>
+        <button onclick="sendCommand('scan cheque')">📄 Cheque</button>
+        <button onclick="sendCommand('start kyc')">🪪 KYC</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let mediaRecorder = null
+    let audioChunks = []
+    let isRecording = false
+    let audioContext = null
+    let analyser = null
+    let stream = null
+
+    function addMessage(text, sender) {
+      const box = document.getElementById('chatBox')
+      const div = document.createElement('div')
+      div.className = 'message ' + sender
+      div.textContent = text
+      box.appendChild(div)
+      box.scrollTop = box.scrollHeight
+    }
+
+    async function startBot() {
+      try {
+        const res = await fetch('/start', { method: 'POST' })
+        const data = await res.json()
+        addMessage(data.message, 'bot')
+      } catch(e) {
+        addMessage('Error starting bot.', 'bot')
+      }
+    }
+
+    function toggleListening() {
+      if (isRecording) {
+        stopRecording()
+      } else {
+        startRecording()
+      }
+    }
+
+    async function startRecording() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        audioContext = new (window.AudioContext || window.webkitAudioContext)()
+        analyser = audioContext.createAnalyser()
+        analyser.fftSize = 1024
+        const source = audioContext.createMediaStreamSource(stream)
+        source.connect(analyser)
+        audioChunks = []
+        mediaRecorder = new MediaRecorder(stream)
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) audioChunks.push(e.data)
+        }
+        mediaRecorder.onstop = processAudio
+        mediaRecorder.start(250)
+        isRecording = true
+        const btn = document.getElementById('micBtn')
+        btn.textContent = '🔴 Listening...'
+        btn.style.background = '#c0392b'
+        addMessage('🎤 Listening... speak now', 'system')
+        detectSilence()
+      } catch (err) {
+        addMessage('❌ Mic error: ' + err.message, 'bot')
+      }
+    }
+
+    function detectSilence() {
+      const data = new Uint8Array(analyser.frequencyBinCount)
+      let speechFound = false
+      let silenceMs = 0
+      let noSpeechMs = 0
+      const interval = 200
+
+      const timer = setInterval(() => {
+        if (!isRecording) { clearInterval(timer); return }
+        analyser.getByteFrequencyData(data)
+        const vol = data.reduce((a, b) => a + b, 0) / data.length
+
+        if (vol > 8) {
+          speechFound = true
+          silenceMs = 0
+          noSpeechMs = 0
+          document.getElementById('micBtn').textContent = '🔴 Speaking...'
+        } else {
+          if (speechFound) {
+            silenceMs += interval
+            const secLeft = Math.ceil((2000 - silenceMs) / 1000)
+            document.getElementById('micBtn').textContent = '🔴 Stopping in ' + secLeft + 's'
+            if (silenceMs >= 2000) {
+              clearInterval(timer)
+              stopRecording()
+            }
+          } else {
+            noSpeechMs += interval
+            if (noSpeechMs >= 10000) {
+              clearInterval(timer)
+              addMessage('No speech detected. Please try again.', 'system')
+              stopRecording()
+            }
+          }
+        }
+      }, interval)
+    }
+
+    function stopRecording() {
+      if (!isRecording) return
+      isRecording = false
+      try { if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop() } catch(e) {}
+      try { if (stream) stream.getTracks().forEach(t => t.stop()) } catch(e) {}
+      try { if (audioContext && audioContext.state !== 'closed') audioContext.close() } catch(e) {}
+      const btn = document.getElementById('micBtn')
+      btn.textContent = '⏳ Processing...'
+      btn.style.background = '#f39c12'
+      btn.disabled = true
+    }
+
+    async function processAudio() {
+      try {
+        const blob = new Blob(audioChunks, { type: 'audio/webm' })
+        const form = new FormData()
+        form.append('audio', blob, 'recording.webm')
+        const res = await fetch('/speech', { method: 'POST', body: form })
+        const data = await res.json()
+
+        if (data.response === 'kyc_start') {
+          resetMicBtn()
+          await startKYC()
+          return
+        }
+
+        if (data.text) addMessage(data.text, 'user')
+        addMessage(data.response, 'bot')
+      } catch(e) {
+        addMessage('Error processing audio.', 'bot')
+      }
+      resetMicBtn()
+    }
+
+    function resetMicBtn() {
+      const btn = document.getElementById('micBtn')
+      btn.textContent = '🎤 Speak'
+      btn.style.background = '#e74c3c'
+      btn.disabled = false
+    }
+
+    async function sendCommand(text) {
+      addMessage(text, 'user')
+      try {
+        const res = await fetch('/command', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        })
+        const data = await res.json()
+        if (data.response === 'kyc_start') {
+          await startKYC()
+          return
+        }
+        addMessage(data.response, 'bot')
+      } catch(e) {
+        addMessage('Error.', 'bot')
+      }
+    }
+
+    async function startKYC() {
+  const btn = document.getElementById('micBtn')
+  btn.textContent = '🔴 KYC...'
+  btn.style.background = '#c0392b'
+  btn.disabled = true
+
+  addMessage('🎙️ KYC started...', 'system')
+
+  // First tell backend to speak instruction
+  try {
+    const res1 = await fetch('/kyc_instruction', { method: 'POST' })
+    const d1 = await res1.json()
+    addMessage(d1.message, 'bot')
+  } catch(e) {}
+
+  // Wait for TTS to finish speaking
+  await new Promise(resolve => setTimeout(resolve, 4000))
+
+  addMessage('🎤 Recording now — say your full name and date of birth...', 'system')
+
+  try {
+    const kycStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const kycContext = new (window.AudioContext || window.webkitAudioContext)()
+    const kycAnalyser = kycContext.createAnalyser()
+    kycAnalyser.fftSize = 1024
+    const kycSource = kycContext.createMediaStreamSource(kycStream)
+    kycSource.connect(kycAnalyser)
+
+    const kycChunks = []
+    const kycRecorder = new MediaRecorder(kycStream)
+
+    kycRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) kycChunks.push(e.data)
+    }
+
+    kycRecorder.onstop = async () => {
+      kycStream.getTracks().forEach(t => t.stop())
+      try { kycContext.close() } catch(e) {}
+
+      addMessage('⏳ Processing KYC...', 'system')
+
+      const blob = new Blob(kycChunks, { type: 'audio/webm' })
+      const form = new FormData()
+      form.append('audio', blob, 'kyc_recording.webm')
+
+      try {
+        const res = await fetch('/kyc_start', { method: 'POST', body: form })
+        const data = await res.json()
+
+        if (data.status === 'complete') {
+          addMessage('✅ ' + data.message, 'bot')
+          if (data.spoken_text) {
+            addMessage('🗣️ You said: "' + data.spoken_text + '"', 'bot')
+          }
+          addMessage('📁 Audio: ' + (data.audio_saved ? 'Saved ✅' : 'Failed ❌') +
+                     ' | Photo: ' + (data.photo_saved ? 'Saved ✅' : 'Not available ❌'), 'bot')
+          addMessage('🔖 Reference: ' + data.reference, 'bot')
+        } else {
+          addMessage('❌ ' + data.message, 'bot')
+        }
+      } catch(e) {
+        addMessage('Error during KYC. Please try again.', 'bot')
+      }
+
+      resetMicBtn()
+    }
+
+    kycRecorder.start(250)
+
+    // Auto stop on silence
+    const kycData = new Uint8Array(kycAnalyser.frequencyBinCount)
+    let kycSpeechFound = false
+    let kycSilenceMs = 0
+    let kycNoSpeechMs = 0
+
+    const kycTimer = setInterval(() => {
+      kycAnalyser.getByteFrequencyData(kycData)
+      const vol = kycData.reduce((a, b) => a + b, 0) / kycData.length
+
+      if (vol > 8) {
+        kycSpeechFound = true
+        kycSilenceMs = 0
+        kycNoSpeechMs = 0
+        btn.textContent = '🔴 KYC Speaking...'
+      } else {
+        if (kycSpeechFound) {
+          kycSilenceMs += 200
+          const sec = Math.ceil((3000 - kycSilenceMs) / 1000)
+          btn.textContent = `🔴 Stopping in ${sec}s`
+          if (kycSilenceMs >= 3000) {
+            clearInterval(kycTimer)
+            kycRecorder.stop()
+          }
+        } else {
+          kycNoSpeechMs += 200
+          if (kycNoSpeechMs >= 15000) {
+            clearInterval(kycTimer)
+            addMessage('No speech detected. Please try again.', 'system')
+            kycRecorder.stop()
+          }
+        }
+      }
+    }, 200)
+
+  } catch(e) {
+    addMessage('❌ Mic error: ' + e.message, 'bot')
+    resetMicBtn()
+  }
+}
+
+    async function uploadCheque() {
+      const file = document.getElementById('chequeFile').files[0]
+      if (!file) { alert('Please select an image'); return }
+      const form = new FormData()
+      form.append('file', file)
+      addMessage('Uploading cheque...', 'user')
+      try {
+        const res = await fetch('/upload_cheque', { method: 'POST', body: form })
+        const data = await res.json()
+        addMessage(data.message, 'bot')
+      } catch(e) {
+        addMessage('Error uploading cheque.', 'bot')
+      }
+    }
+  </script>
+</body>
+</html>
