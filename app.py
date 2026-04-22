@@ -16,17 +16,44 @@ CURRENT_BALANCE = 15000.00
 welcome_played = False
 
 def detect_intent(text):
-    text = text.lower()
-    if any(word in text for word in ["transfer", "send", "pay", "payment", "beneficiary", "bank name", "account number", "amount"]):
+    text = text.lower().strip()
+
+    transfer_words = ["transfer", "send", "pay", "payment", "beneficiary",
+                      "bank name", "account number", "amount", "remit",
+                      "wire", "dispatch", "transmit"]
+    if any(word in text for word in transfer_words):
         return "transfer"
-    if any(word in text for word in ["balance", "how much", "funds"]):
+
+    balance_words = ["balance", "how much", "funds", "money left",
+                     "account balance", "check balance", "my balance",
+                     "what is my", "tell me my", "show balance",
+                     "how many", "remaining"]
+    if any(word in text for word in balance_words):
         return "balance"
-    if any(word in text for word in ["cheque", "check", "upload", "scan"]):
+
+    cheque_words = ["cheque", "check", "upload", "scan", "verify cheque",
+                    "validate", "chek", "chaque", "chase", "chuck"]
+    if any(word in text for word in cheque_words):
         return "cheque"
-    if any(word in text for word in ["kyc", "verify", "verification", "identity"]):
+
+    kyc_words = ["kyc", "verify", "verification", "identity", "know your",
+                 "document", "id proof", "identification", "kvc",
+                 "cky", "k y c"]
+    if any(word in text for word in kyc_words):
         return "kyc"
-    if any(word in text for word in ["bye", "exit", "quit", "goodbye", "thank you"]):
+
+    exit_words = ["bye", "exit", "quit", "goodbye", "thank you", "thanks",
+                  "close", "stop", "end", "finish", "done"]
+    if any(word in text for word in exit_words):
         return "exit"
+
+    if any(word in text for word in ["ball", "bells", "ballance", "balanc"]):
+        return "balance"
+    if any(word in text for word in ["transf", "trans for"]):
+        return "transfer"
+    if any(word in text for word in ["kayo", "casey", "kc", "kayak"]):
+        return "kyc"
+
     return "unknown"
 
 def parse_transfer_details(text):
@@ -39,7 +66,10 @@ def parse_transfer_details(text):
         r"beneficiary[:\s]+([a-zA-Z]+)",
         r"rename[:\s]+([a-zA-Z]+)",
         r"recipient[:\s]+([a-zA-Z]+)",
-        r"name[:\s]+([a-zA-Z]+)"
+        r"name[:\s]+([a-zA-Z]+)",
+        r"send to[:\s]+([a-zA-Z]+)",
+        r"transfer to[:\s]+([a-zA-Z]+)",
+        r"pay to[:\s]+([a-zA-Z]+)",
     ]:
         match = re.search(pattern, text)
         if match:
@@ -49,7 +79,8 @@ def parse_transfer_details(text):
     bank = ""
     for pattern in [
         r"bank name[:\s]+([a-zA-Z]+(?:\s[a-zA-Z]+)?)",
-        r"bank[:\s]+([a-zA-Z]+(?:\s[a-zA-Z]+)?)"
+        r"bank[:\s]+([a-zA-Z]+(?:\s[a-zA-Z]+)?)",
+        r"at bank[:\s]+([a-zA-Z]+(?:\s[a-zA-Z]+)?)",
     ]:
         match = re.search(pattern, text)
         if match:
@@ -57,15 +88,31 @@ def parse_transfer_details(text):
             break
 
     account = ""
-    match = re.search(r'account number[:\s]+(\d+)', text)
-    if match:
-        account = f"****{match.group(1)[-4:]}"
+    for pattern in [
+        r"account number[:\s]+(\d+)",
+        r"account no[:\s]+(\d+)",
+        r"acc number[:\s]+(\d+)",
+        r"account[:\s]+(\d+)",
+    ]:
+        match = re.search(pattern, text)
+        if match:
+            account = f"****{match.group(1)[-4:]}"
+            break
 
     amount = ""
-    match = re.search(r'amount[:\s]+(\d+)', text)
-    if match:
-        amount = match.group(1)
-    else:
+    for pattern in [
+        r"amount[:\s]+(\d+)",
+        r"(\d+)\s*aed",
+        r"(\d+)\s*dirham",
+        r"(\d+)\s*rupees",
+        r"(\d+)\s*dollars",
+    ]:
+        match = re.search(pattern, text)
+        if match:
+            amount = match.group(1)
+            break
+
+    if not amount:
         numbers = re.findall(r'\d+', text)
         if numbers:
             amount = numbers[-1]
@@ -81,7 +128,7 @@ def process_intent(intent, text=""):
         return msg
 
     elif intent == "transfer":
-        if any(word in text for word in ["beneficiary", "rename", "recipient", "bank name", "account number", "amount"]):
+        if any(word in text for word in ["beneficiary", "rename", "recipient", "bank name", "account number", "amount", "send to", "transfer to", "pay to"]):
             beneficiary, bank, account, amount_str = parse_transfer_details(text)
             try:
                 transfer_amount = float(amount_str)
@@ -133,12 +180,19 @@ def process_intent(intent, text=""):
 def index():
     return render_template('index.html')
 
+@app.route('/reset', methods=['POST'])
+def reset():
+    global CURRENT_BALANCE, welcome_played
+    CURRENT_BALANCE = 15000.00
+    welcome_played = False
+    return jsonify({"message": "Reset successful", "balance": CURRENT_BALANCE})
+
 @app.route('/start', methods=['POST'])
 def start():
     global welcome_played, CURRENT_BALANCE
     CURRENT_BALANCE = 15000.00
     welcome_played = False
-    msg = "Welcome to Kentiq AI Voice Bot from Dubai Central Bank . How can I help you?"
+    msg = "Welcome to Kentiq AI Voice Bot from Dubai Bank Bank. How can I help you?"
     speak(msg)
     return jsonify({"message": msg, "status": "ready"})
 
@@ -153,11 +207,10 @@ def command():
 @app.route('/kyc_instruction', methods=['POST'])
 def kyc_instruction():
     from tts import wait_for_tts
-    speak("Please say your full name and date of birth after the beep.")
-    wait_for_tts()
-    # Play beep
     import numpy as np
     import sounddevice as sd
+    speak("Please say your full name and date of birth after the beep.")
+    wait_for_tts()
     sample_rate = 44100
     t = np.linspace(0, 0.3, int(sample_rate * 0.3))
     beep = (np.sin(2 * np.pi * 880 * t) * 32767).astype(np.int16)
@@ -182,11 +235,9 @@ def kyc_start():
         os.makedirs('uploads', exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # Save webm from browser
         tmp_webm = f"uploads/kyc_temp_{timestamp}.webm"
         audio_file.save(tmp_webm)
 
-        # Convert to wav
         audio_filename = f"uploads/kyc_audio_{timestamp}.wav"
         result = subprocess.run([
             'ffmpeg', '-i', tmp_webm,
@@ -194,7 +245,6 @@ def kyc_start():
             '-y', audio_filename
         ], capture_output=True, timeout=15)
 
-        # Clean temp webm
         try:
             os.unlink(tmp_webm)
         except:
@@ -206,7 +256,6 @@ def kyc_start():
         speak("Thank you. Processing your details.")
         wait_for_tts()
 
-        # Recognize speech
         spoken_text = ""
         try:
             recognizer = sr.Recognizer()
@@ -227,7 +276,6 @@ def kyc_start():
             speak("Audio saved successfully.")
             wait_for_tts()
 
-        # Capture photo
         speak("Please look at the camera.")
         wait_for_tts()
         time.sleep(1)
@@ -268,7 +316,7 @@ def kyc_start():
         print(f"KYC error: {e}")
         speak("KYC error. Please try again.")
         return jsonify({"status": "error", "message": f"KYC error: {str(e)}"})
-    
+
 @app.route('/speech', methods=['POST'])
 def speech_route():
     import tempfile

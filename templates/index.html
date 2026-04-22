@@ -48,6 +48,35 @@
     let analyser = null
     let stream = null
 
+    // Reset everything on page refresh
+    window.addEventListener('beforeunload', () => {
+      try {
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop()
+        if (stream) stream.getTracks().forEach(t => t.stop())
+        if (audioContext && audioContext.state !== 'closed') audioContext.close()
+      } catch(e) {}
+    })
+
+    window.addEventListener('load', async () => {
+      try {
+        await fetch('/reset', { method: 'POST' })
+      } catch(e) {}
+
+      mediaRecorder = null
+      audioChunks = []
+      isRecording = false
+      audioContext = null
+      analyser = null
+      stream = null
+
+      const btn = document.getElementById('micBtn')
+      if (btn) {
+        btn.textContent = '🎤 Speak'
+        btn.style.background = '#e74c3c'
+        btn.disabled = false
+      }
+    })
+
     function addMessage(text, sender) {
       const box = document.getElementById('chatBox')
       const div = document.createElement('div')
@@ -200,114 +229,111 @@
     }
 
     async function startKYC() {
-  const btn = document.getElementById('micBtn')
-  btn.textContent = '🔴 KYC...'
-  btn.style.background = '#c0392b'
-  btn.disabled = true
+      const btn = document.getElementById('micBtn')
+      btn.textContent = '🔴 KYC...'
+      btn.style.background = '#c0392b'
+      btn.disabled = true
 
-  addMessage('🎙️ KYC started...', 'system')
-
-  // First tell backend to speak instruction
-  try {
-    const res1 = await fetch('/kyc_instruction', { method: 'POST' })
-    const d1 = await res1.json()
-    addMessage(d1.message, 'bot')
-  } catch(e) {}
-
-  // Wait for TTS to finish speaking
-  await new Promise(resolve => setTimeout(resolve, 4000))
-
-  addMessage('🎤 Recording now — say your full name and date of birth...', 'system')
-
-  try {
-    const kycStream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    const kycContext = new (window.AudioContext || window.webkitAudioContext)()
-    const kycAnalyser = kycContext.createAnalyser()
-    kycAnalyser.fftSize = 1024
-    const kycSource = kycContext.createMediaStreamSource(kycStream)
-    kycSource.connect(kycAnalyser)
-
-    const kycChunks = []
-    const kycRecorder = new MediaRecorder(kycStream)
-
-    kycRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) kycChunks.push(e.data)
-    }
-
-    kycRecorder.onstop = async () => {
-      kycStream.getTracks().forEach(t => t.stop())
-      try { kycContext.close() } catch(e) {}
-
-      addMessage('⏳ Processing KYC...', 'system')
-
-      const blob = new Blob(kycChunks, { type: 'audio/webm' })
-      const form = new FormData()
-      form.append('audio', blob, 'kyc_recording.webm')
+      addMessage('🎙️ KYC started...', 'system')
 
       try {
-        const res = await fetch('/kyc_start', { method: 'POST', body: form })
-        const data = await res.json()
+        const res1 = await fetch('/kyc_instruction', { method: 'POST' })
+        const d1 = await res1.json()
+        addMessage(d1.message, 'bot')
+      } catch(e) {}
 
-        if (data.status === 'complete') {
-          addMessage('✅ ' + data.message, 'bot')
-          if (data.spoken_text) {
-            addMessage('🗣️ You said: "' + data.spoken_text + '"', 'bot')
-          }
-          addMessage('📁 Audio: ' + (data.audio_saved ? 'Saved ✅' : 'Failed ❌') +
-                     ' | Photo: ' + (data.photo_saved ? 'Saved ✅' : 'Not available ❌'), 'bot')
-          addMessage('🔖 Reference: ' + data.reference, 'bot')
-        } else {
-          addMessage('❌ ' + data.message, 'bot')
+      addMessage('🎤 Get ready... recording starts after beep', 'system')
+      await new Promise(resolve => setTimeout(resolve, 1500))
+      addMessage('🔴 Recording started — speak now!', 'system')
+
+      try {
+        const kycStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        const kycContext = new (window.AudioContext || window.webkitAudioContext)()
+        const kycAnalyser = kycContext.createAnalyser()
+        kycAnalyser.fftSize = 1024
+        const kycSource = kycContext.createMediaStreamSource(kycStream)
+        kycSource.connect(kycAnalyser)
+
+        const kycChunks = []
+        const kycRecorder = new MediaRecorder(kycStream)
+
+        kycRecorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) kycChunks.push(e.data)
         }
+
+        kycRecorder.onstop = async () => {
+          kycStream.getTracks().forEach(t => t.stop())
+          try { kycContext.close() } catch(e) {}
+
+          addMessage('⏳ Processing KYC...', 'system')
+
+          const blob = new Blob(kycChunks, { type: 'audio/webm' })
+          const form = new FormData()
+          form.append('audio', blob, 'kyc_recording.webm')
+
+          try {
+            const res = await fetch('/kyc_start', { method: 'POST', body: form })
+            const data = await res.json()
+
+            if (data.status === 'complete') {
+              addMessage('✅ ' + data.message, 'bot')
+              if (data.spoken_text) {
+                addMessage('🗣️ You said: "' + data.spoken_text + '"', 'bot')
+              }
+              addMessage('📁 Audio: ' + (data.audio_saved ? 'Saved ✅' : 'Failed ❌') +
+                         ' | Photo: ' + (data.photo_saved ? 'Saved ✅' : 'Not available ❌'), 'bot')
+              addMessage('🔖 Reference: ' + data.reference, 'bot')
+            } else {
+              addMessage('❌ ' + data.message, 'bot')
+            }
+          } catch(e) {
+            addMessage('Error during KYC. Please try again.', 'bot')
+          }
+
+          resetMicBtn()
+        }
+
+        kycRecorder.start(250)
+
+        const kycData = new Uint8Array(kycAnalyser.frequencyBinCount)
+        let kycSpeechFound = false
+        let kycSilenceMs = 0
+        let kycNoSpeechMs = 0
+
+        const kycTimer = setInterval(() => {
+          kycAnalyser.getByteFrequencyData(kycData)
+          const vol = kycData.reduce((a, b) => a + b, 0) / kycData.length
+
+          if (vol > 8) {
+            kycSpeechFound = true
+            kycSilenceMs = 0
+            kycNoSpeechMs = 0
+            btn.textContent = '🔴 KYC Speaking...'
+          } else {
+            if (kycSpeechFound) {
+              kycSilenceMs += 200
+              const sec = Math.ceil((4000 - kycSilenceMs) / 1000)
+              btn.textContent = '🔴 Stopping in ' + sec + 's'
+              if (kycSilenceMs >= 4000) {
+                clearInterval(kycTimer)
+                kycRecorder.stop()
+              }
+            } else {
+              kycNoSpeechMs += 200
+              if (kycNoSpeechMs >= 15000) {
+                clearInterval(kycTimer)
+                addMessage('No speech detected. Please try again.', 'system')
+                kycRecorder.stop()
+              }
+            }
+          }
+        }, 200)
+
       } catch(e) {
-        addMessage('Error during KYC. Please try again.', 'bot')
+        addMessage('❌ Mic error: ' + e.message, 'bot')
+        resetMicBtn()
       }
-
-      resetMicBtn()
     }
-
-    kycRecorder.start(250)
-
-    // Auto stop on silence
-    const kycData = new Uint8Array(kycAnalyser.frequencyBinCount)
-    let kycSpeechFound = false
-    let kycSilenceMs = 0
-    let kycNoSpeechMs = 0
-
-    const kycTimer = setInterval(() => {
-      kycAnalyser.getByteFrequencyData(kycData)
-      const vol = kycData.reduce((a, b) => a + b, 0) / kycData.length
-
-      if (vol > 8) {
-        kycSpeechFound = true
-        kycSilenceMs = 0
-        kycNoSpeechMs = 0
-        btn.textContent = '🔴 KYC Speaking...'
-      } else {
-        if (kycSpeechFound) {
-          kycSilenceMs += 200
-          const sec = Math.ceil((3000 - kycSilenceMs) / 1000)
-          btn.textContent = `🔴 Stopping in ${sec}s`
-          if (kycSilenceMs >= 3000) {
-            clearInterval(kycTimer)
-            kycRecorder.stop()
-          }
-        } else {
-          kycNoSpeechMs += 200
-          if (kycNoSpeechMs >= 15000) {
-            clearInterval(kycTimer)
-            addMessage('No speech detected. Please try again.', 'system')
-            kycRecorder.stop()
-          }
-        }
-      }
-    }, 200)
-
-  } catch(e) {
-    addMessage('❌ Mic error: ' + e.message, 'bot')
-    resetMicBtn()
-  }
-}
 
     async function uploadCheque() {
       const file = document.getElementById('chequeFile').files[0]
